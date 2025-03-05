@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Client Interface</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- Bootstrap + Animate.css -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css"/>
+    <style>
+      body { background: #f8f9fa; }
+      .container { margin-top: 20px; }
+      #chatLog { max-height: 300px; overflow-y: auto; }
+      .message { margin-bottom: 10px; }
+      .toast-container { position: fixed; top: 20px; right: 20px; z-index: 1055; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>Client Interface</h1>
+      <p class="lead">Ticket ID: <strong id="ticketDisplay"></strong></p>
+      <p>Current Mode: <strong id="modeLabel"></strong></p>
+      <div class="d-flex justify-content-end mb-3">
+        <button id="endBtn" class="btn btn-danger">End Conversation</button>
+      </div>
+      <div class="card mb-3">
+        <div class="card-header">Chat Log</div>
+        <div id="chatLog" class="card-body"></div>
+      </div>
+      
+      <!-- Text Controls -->
+      <div id="textControls" style="display:none;" class="input-group mb-3">
+        <input id="messageInput" type="text" class="form-control" placeholder="Enter message">
+        <button id="sendBtn" class="btn btn-primary">Send</button>
+      </div>
+      
+      <!-- Audio Controls -->
+      <div id="audioControls" style="display:none;" class="mb-3">
+        <button id="startBtn" class="btn btn-success me-2">Start Recording</button>
+        <button id="stopBtn" class="btn btn-secondary" disabled>Stop Recording</button>
+      </div>
+    </div>
+    
+    <div class="toast-container" id="toastContainer"></div>
+    <audio id="notificationSound" src="https://actions.google.com/sounds/v1/alarms/beep_short.ogg"></audio>
+    
+    <!-- Socket.IO + Bootstrap JS -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.1/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+      const role = "client";
+      const ticket_id = "{{ ticket_id }}";
+      const chosenMode = "{{ mode }}";
+      
+      const ticketDisplay = document.getElementById('ticketDisplay');
+      const modeLabel = document.getElementById('modeLabel');
+      const chatLog = document.getElementById('chatLog');
+      const endBtn = document.getElementById('endBtn');
+      
+      // Text controls
+      const textControls = document.getElementById('textControls');
+      const messageInput = document.getElementById('messageInput');
+      const sendBtn = document.getElementById('sendBtn');
+      
+      // Audio controls
+      const audioControls = document.getElementById('audioControls');
+      const startBtn = document.getElementById('startBtn');
+      const stopBtn = document.getElementById('stopBtn');
+      
+      const toastContainer = document.getElementById('toastContainer');
+      const notificationSound = document.getElementById('notificationSound');
+      
+      let socket = io();
+      let mediaRecorder = null;
+      let recordedChunks = [];
+      let stream = null;
+      
+      ticketDisplay.textContent = ticket_id;
+      modeLabel.textContent = chosenMode.toUpperCase();
+      
+      if(chosenMode==="text"){
+        textControls.style.display = "flex";
+        audioControls.style.display = "none";
+      } else {
+        textControls.style.display = "none";
+        audioControls.style.display = "block";
+      }
+      
+      socket.emit('join', { role, ticket_id });
+      socket.emit('set_mode', { ticket_id, mode: chosenMode });
+      
+      endBtn.addEventListener('click', ()=>{
+        socket.emit('end_conversation', { ticket_id });
+      });
+      
+      sendBtn.addEventListener('click', ()=>{
+        const msg = messageInput.value.trim();
+        if(!msg) return;
+        socket.emit('chat_message', { role, ticket_id, message: msg });
+        addMessage("You: " + msg, "text-end");
+        messageInput.value = "";
+      });
+      
+      startBtn.addEventListener('click', async ()=>{
+        if(!mediaRecorder){
+          await initRecorder();
+        }
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        mediaRecorder.start();
+      });
+      
+      stopBtn.addEventListener('click', ()=>{
+        stopBtn.disabled = true;
+        startBtn.disabled = false;
+        if(mediaRecorder && mediaRecorder.state==='recording'){
+          mediaRecorder.stop();
+        }
+      });
+      
+      async function initRecorder(){
+        try{
+          stream = await navigator.mediaDevices.getUserMedia({ audio:true });
+          mediaRecorder = new MediaRecorder(stream);
+          mediaRecorder.ondataavailable = e=>{
+            if(e.data.size>0){
+              recordedChunks.push(e.data);
+            }
+          };
+          mediaRecorder.onstop = ()=>{
+            let blob = new Blob(recordedChunks, { type:'audio/webm' });
+            recordedChunks = [];
+            let reader = new FileReader();
+            reader.onloadend = function(){
+              const base64data = reader.result;
+              socket.emit('audio_message', { role, ticket_id, audio: base64data });
+              addMessage("You sent an audio message", "text-end", base64data);
+            };
+            reader.readAsDataURL(blob);
+          };
+        }catch(err){
+          console.error("Microphone error:", err);
+        }
+      }
+      
+      function addMessage(msg, align, audioBase64=null){
+        const div = document.createElement('div');
+        div.className = `message ${align} animate__animated animate__fadeInUp`;
+        const p = document.createElement('p');
+        p.innerText = msg;
+        div.appendChild(p);
+        if(audioBase64){
+          const audio = document.createElement('audio');
+          audio.controls = true;
+          audio.src = audioBase64;
+          div.appendChild(audio);
+        }
+        chatLog.appendChild(div);
+        chatLog.scrollTop = chatLog.scrollHeight;
+      }
+      
+      function showToast(message){
+        const toastEl = document.createElement('div');
+        toastEl.className = 'toast align-items-center text-bg-info border-0 animate__animated animate__fadeInDown';
+        toastEl.innerHTML = `
+          <div class="d-flex">
+            <div class="toast-body">${message}</div>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+          </div>
+        `;
+        toastContainer.appendChild(toastEl);
+        const toast = new bootstrap.Toast(toastEl, { delay:3000 });
+        toast.show();
+        setTimeout(()=>toastEl.remove(),3500);
+      }
+      
+      socket.on('chat_message', data=>{
+        if(data.ticket_id!==ticket_id) return;
+        addMessage("Agent: " + data.message, "text-start");
+        showToast("New text message from " + data.sender);
+        notificationSound.play();
+      });
+      
+      socket.on('audio_message', data=>{
+        if(data.ticket_id!==ticket_id) return;
+        addMessage("Agent sent an audio message", "text-start", data.audio);
+        showToast("New audio message from " + data.sender);
+        notificationSound.play();
+      });
+      
+      socket.on('conversation_ended', data=>{
+        if(data.ticket_id===ticket_id){
+          alert("Conversation ended. Returning to login.");
+          window.location.href = "/client-login";
+        }
+      });
+    </script>
+  </body>
+</html>
